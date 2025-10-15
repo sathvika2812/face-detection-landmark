@@ -1,44 +1,91 @@
 import streamlit as st
 import cv2
-import numpy as np
+import mediapipe as mp
 from PIL import Image
-from utils.face_detection import detect_faces, draw_faces
-from utils.landmark_detection import detect_landmarks, draw_landmarks
+import numpy as np
 
-st.set_page_config(page_title="Face Analysis", layout="wide")
-st.title("Face Detection and Landmark Identification")
-st.markdown("Upload an image and choose between **Face Detection** or **Landmark Detection**")
+# ----------------------------
+# Initialize Mediapipe
+mp_face_detection = mp.solutions.face_detection
+mp_face_mesh = mp.solutions.face_mesh
+mp_drawing = mp.solutions.drawing_utils
 
-# Sidebar
-task = st.sidebar.selectbox(
-    "Select Task",
-    ["Face Detection", "Landmark Detection"]
-)
+st.set_page_config(page_title="Face Detection & Landmarks", layout="wide")
+st.title("Clickable Face Detection with Landmarks")
 
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+# ----------------------------
+# Input type selection
+input_type = st.radio("Select Input Type:", ["Upload Image", "Webcam"])
 
-if uploaded_file is not None:
-    # Convert to OpenCV image
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    image = cv2.imdecode(file_bytes, 1)
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # Convert to RGB for consistency
-    original_image = image.copy()
+# ----------------------------
+def detect_faces(image):
+    """Detect faces in the image and return bounding boxes"""
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    faces = []
+    with mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5) as face_detection:
+        results = face_detection.process(image_rgb)
+        if results.detections:
+            ih, iw, _ = image.shape
+            for detection in results.detections:
+                bboxC = detection.location_data.relative_bounding_box
+                bbox = int(bboxC.xmin * iw), int(bboxC.ymin * ih), int(bboxC.width * iw), int(bboxC.height * ih)
+                faces.append(bbox)
+    return faces
 
-    if task == "Face Detection":
-        with st.spinner("Detecting faces..."):
-            faces = detect_faces(image)
-            result_img = draw_faces(image.copy(), faces)
-        st.success(f"✅ Detected {len(faces)} face(s)")
+def draw_landmarks(image):
+    """Draw facial landmarks"""
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    with mp_face_mesh.FaceMesh(static_image_mode=True) as face_mesh:
+        results = face_mesh.process(image_rgb)
+        if results.multi_face_landmarks:
+            for face_landmarks in results.multi_face_landmarks:
+                mp_drawing.draw_landmarks(
+                    image=image,
+                    landmark_list=face_landmarks,
+                    connections=mp_face_mesh.FACEMESH_TESSELATION,
+                    landmark_drawing_spec=None,
+                    connection_drawing_spec=mp_drawing.DrawingSpec(color=(0,255,0), thickness=1, circle_radius=1)
+                )
+    return image
+
+# ----------------------------
+# IMAGE UPLOAD
+if input_type == "Upload Image":
+    uploaded_file = st.file_uploader("Upload an Image", type=["jpg", "jpeg", "png"])
+    if uploaded_file is not None:
+        image = np.array(Image.open(uploaded_file))
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        faces = detect_faces(image)
+
+        # Draw bounding boxes
+        for bbox in faces:
+            x, y, w, h = bbox
+            cv2.rectangle(image, (x, y), (x+w, y+h), (0,255,0), 2)
+
+        # Draw landmarks
+        image = draw_landmarks(image)
         
-    else:  # Landmark Detection
-        with st.spinner("Detecting facial landmarks..."):
-            landmarks = detect_landmarks(image)
-            result_img = draw_landmarks(image.copy(), landmarks)
-        st.success(f"✅ Detected landmarks on {len(landmarks)} face(s)")
+        # Display image
+        st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption=f"Detected {len(faces)} face(s)", use_column_width=True)
 
-    # Display results
-    col1, col2 = st.columns(2)
-    with col1:
-        st.image(original_image, caption="Original Image", use_column_width=True)
-    with col2:
-        st.image(result_img, caption="Processed Image", use_column_width=True)
+# ----------------------------
+# WEBCAM
+else:
+    run = st.checkbox("Start Webcam")
+    FRAME_WINDOW = st.image([])
+    cap = cv2.VideoCapture(0)
+
+    while run:
+        ret, frame = cap.read()
+        if not ret:
+            st.error("Failed to access webcam")
+            break
+
+        faces = detect_faces(frame)
+        for bbox in faces:
+            x, y, w, h = bbox
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (0,255,0), 2)
+        frame = draw_landmarks(frame)
+        FRAME_WINDOW.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    
+    cap.release()
